@@ -1,5 +1,7 @@
 use std::ops::{Index, IndexMut};
 
+pub const NUM_DIMS: usize = 4;
+
 pub struct Tensor<T: TensorIndex> {
 	backing_storage: T::BackingStorage,
 }
@@ -17,68 +19,68 @@ pub trait TensorIndex {
 }
 
 impl TensorIndex for Index1 {
-	type BackingStorage = [f64; 4];
+	type BackingStorage = [f64; NUM_DIMS];
 
-	fn new_backing_storage() -> [f64; 4] {
-		[0.0; 4]
+	fn new_backing_storage() -> [f64; NUM_DIMS] {
+		[0.0; NUM_DIMS]
 	}
 
-	fn index<'a>(&self, backing: &'a [f64; 4]) -> &'a f64 {
-		debug_assert!(self.0[0] < 4);
+	fn index<'a>(&self, backing: &'a [f64; NUM_DIMS]) -> &'a f64 {
+		debug_assert!(self.0[0] < NUM_DIMS);
 
 		&backing[self.0[0]]
 	}
 
-	fn index_mut<'a>(&self, backing: &'a mut [f64; 4]) -> &'a mut f64 {
-		debug_assert!(self.0[0] < 4);
+	fn index_mut<'a>(&self, backing: &'a mut [f64; NUM_DIMS]) -> &'a mut f64 {
+		debug_assert!(self.0[0] < NUM_DIMS);
 
 		&mut backing[self.0[0]]
 	}
 }
 
 impl TensorIndex for Index2 {
-	type BackingStorage = [f64; 16];
+	type BackingStorage = [f64; NUM_DIMS * NUM_DIMS];
 
-	fn new_backing_storage() -> [f64; 16] {
-		[0.0; 16]
+	fn new_backing_storage() -> [f64; NUM_DIMS * NUM_DIMS] {
+		[0.0; NUM_DIMS * NUM_DIMS]
 	}
 
-	fn index<'a>(&self, backing: &'a [f64; 16]) -> &'a f64 {
-		debug_assert!(self.0[0] < 4);
-		debug_assert!(self.0[1] < 4);
+	fn index<'a>(&self, backing: &'a [f64; NUM_DIMS * NUM_DIMS]) -> &'a f64 {
+		debug_assert!(self.0[0] < NUM_DIMS);
+		debug_assert!(self.0[1] < NUM_DIMS);
 
-		&backing[self.0[0] * 4 + self.0[1]]
+		&backing[self.0[0] * NUM_DIMS + self.0[1]]
 	}
 
-	fn index_mut<'a>(&self, backing: &'a mut [f64; 16]) -> &'a mut f64 {
-		debug_assert!(self.0[0] < 4);
-		debug_assert!(self.0[1] < 4);
+	fn index_mut<'a>(&self, backing: &'a mut [f64; NUM_DIMS * NUM_DIMS]) -> &'a mut f64 {
+		debug_assert!(self.0[0] < NUM_DIMS);
+		debug_assert!(self.0[1] < NUM_DIMS);
 
-		&mut backing[self.0[0] * 4 + self.0[1]]
+		&mut backing[self.0[0] * NUM_DIMS + self.0[1]]
 	}
 }
 
 impl TensorIndex for Index3 {
-	type BackingStorage = [f64; 64];
+	type BackingStorage = [f64; NUM_DIMS * NUM_DIMS * NUM_DIMS];
 
-	fn new_backing_storage() -> [f64; 64] {
-		[0.0; 64]
+	fn new_backing_storage() -> [f64; NUM_DIMS * NUM_DIMS * NUM_DIMS] {
+		[0.0; NUM_DIMS * NUM_DIMS * NUM_DIMS]
 	}
 
-	fn index<'a>(&self, backing: &'a [f64; 64]) -> &'a f64 {
-		debug_assert!(self.0[0] < 4);
-		debug_assert!(self.0[1] < 4);
-		debug_assert!(self.0[2] < 4);
+	fn index<'a>(&self, backing: &'a [f64; NUM_DIMS * NUM_DIMS * NUM_DIMS]) -> &'a f64 {
+		debug_assert!(self.0[0] < NUM_DIMS);
+		debug_assert!(self.0[1] < NUM_DIMS);
+		debug_assert!(self.0[2] < NUM_DIMS);
 
-		&backing[self.0[0] * 16 + self.0[1] * 4 + self.0[2]]
+		&backing[self.0[0] * NUM_DIMS * NUM_DIMS + self.0[1] * NUM_DIMS + self.0[2]]
 	}
 
-	fn index_mut<'a>(&self, backing: &'a mut [f64; 64]) -> &'a mut f64 {
-		debug_assert!(self.0[0] < 4);
-		debug_assert!(self.0[1] < 4);
-		debug_assert!(self.0[2] < 4);
+	fn index_mut<'a>(&self, backing: &'a mut [f64; NUM_DIMS * NUM_DIMS * NUM_DIMS]) -> &'a mut f64 {
+		debug_assert!(self.0[0] < NUM_DIMS);
+		debug_assert!(self.0[1] < NUM_DIMS);
+		debug_assert!(self.0[2] < NUM_DIMS);
 
-		&mut backing[self.0[0] * 16 + self.0[1] * 4 + self.0[2]]
+		&mut backing[self.0[0] * NUM_DIMS * NUM_DIMS + self.0[1] * NUM_DIMS + self.0[2]]
 	}
 }
 
