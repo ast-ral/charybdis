@@ -1,17 +1,31 @@
+mod coords;
 mod tensor;
 
-use std::f64::consts::PI;
+use std::f64::consts::{PI, TAU};
 use std::time::Instant;
 
-use image::{ImageBuffer, Rgb, open};
+use image::{ImageBuffer, Rgb, Rgba, open};
 
-use tensor::{Tensor, Index2, Index3};
+use coords::{
+	SpacetimeCoords,
+	SphericalCoords,
+	XYZCoords,
+	XYZUnitCoords,
+};
+use tensor::{Tensor, Index2, Index3, NUM_DIMS};
+
+const WIDTH: u32 = 400;
+const HEIGHT: u32 = 400;
+const FOV_DEGREES: f64 = 45.0;
 
 fn main() {
 	let start = Instant::now();
 
-	const WIDTH: u32 = 1000;
-	const HEIGHT: u32 = 1000;
+	if WIDTH != HEIGHT {
+		panic!("only support square images right now");
+	}
+
+	let fov_multiplier = (FOV_DEGREES / 360.0 * TAU / 2.0).tan();
 
 	let mut image = ImageBuffer::<Rgb<u8>, Vec<u8>>::new(WIDTH, HEIGHT);
 
@@ -19,12 +33,14 @@ fn main() {
 
 	let background = background_dynamic.as_rgba8().unwrap();
 
-	let background_width = background.width() as f64;
-	let background_height = background.height() as f64;
+	let camera = Camera {
+		camera_position: XYZCoords {x: 3.5, y: 0.0, z: 0.0},
+		camera_facing: XYZUnitCoords::from_unnormed(-1.0, 0.0, 0.0),
+		camera_right: XYZUnitCoords::from_unnormed(0.0, 0.0, 1.0),
+		camera_up: XYZUnitCoords::from_unnormed(0.0, 1.0, 0.0),
+	};
 
-	let camera_position = Coords4 {t: 0.0, r: 3.5, theta: PI / 2.0, phi: 0.0};
-
-	let delta_t = 0.001;
+	let delta_t = 0.01;
 
 	for x in 0 .. WIDTH {
 		let x_scale = x as f64 / WIDTH as f64 * 2.0 - 1.0;
@@ -33,12 +49,12 @@ fn main() {
 			let y_scale = y as f64 / HEIGHT as f64 * 2.0 - 1.0;
 
 			let mut ray = Ray::new(
-				camera_position,
-				Coords3 {r: -1.0, theta: y_scale * 0.5, phi: x_scale * 0.5},
-				//Coords3 {r: x_scale, theta: -y_scale, phi: -1.0},
+				&camera,
+				x_scale * fov_multiplier,
+				y_scale * fov_multiplier,
 			);
 
-			let mut flipped = false;
+			let mut i = 0;
 
 			let termination = loop {
 				if let Some(termination) = ray.terminate() {
@@ -47,324 +63,255 @@ fn main() {
 
 				ray.step(delta_t);
 
-				let theta_rem = ray.position.theta.rem_euclid(PI);
+				i += 1;
 
-				if theta_rem < 0.15 * PI || theta_rem > 0.85 * PI {
-					let Coords4 {theta: otheta, phi: ophi, ..} = ray.position;
-
-					let (ntheta, nphi) = flip_position(otheta, ophi);
-
-					ray.position.theta = ntheta;
-					ray.position.phi = nphi;
-
-					let Coords4 {theta: dtheta, phi: dphi, ..} = ray.velocity;
-
-					let (dtheta, dphi) = flip_velocity(
-						dtheta, dphi,
-						(otheta, ophi),
-						(ntheta, nphi),
-					);
-
-					ray.velocity.theta = dtheta;
-					ray.velocity.phi = dphi;
-
-					flipped = !flipped;
+				if i % 10 == 0 {
+					ray.renormalize();
 				}
 			};
 
-			//dbg!(termination);
-
-			if (x * HEIGHT + y) % 100 == 0 {
-				let completion = (x as f64 * HEIGHT as f64 + y as f64) / (WIDTH as f64 * HEIGHT as f64);
-
-				let estimated_remaining = start.elapsed().div_f64(completion + 0.00000001).mul_f64(1.0 - completion);
-
-				dbg!(estimated_remaining);
-			}
-
 			let color = match termination {
 				Termination::EventHorizon(_) => [0, 0, 0].into(),
-				Termination::Background(Coords2 {mut theta, mut phi}) => {
-					//dbg!(theta, phi);
-
-					if flipped {
-						let (ntheta, nphi) = flip_position(theta, phi);
-						theta = ntheta;
-						phi = nphi;
-					}
-
-					let mut theta = theta.rem_euclid(2.0 * PI);
-
-					if theta >= PI {
-						phi += PI;
-						theta -= PI;
-					}
-
-					let phi = phi.rem_euclid(2.0 * PI);
-
-					let mut x = phi / (2.0 * PI) * background_width;
-					let mut y = theta / PI * background_height;
-
-					if x >= background_width {
-						dbg!("x is {}, background_width is {}", x, background_width);
-						x = background_width - 1.0;
-					}
-
-					if y >= background_height {
-						dbg!("y is {}, background_height is {}", y, background_height);
-						y = background_height - 1.0;
-					}
-
-					let pixel = background.get_pixel(x as u32, y as u32);
-
-					[pixel[0], pixel[1], pixel[2]].into()
+				Termination::Background(coords) => {
+					determine_pixel(coords, background)
 				},
 			};
 
 			image.put_pixel(x, y, color);
+
+			if (x * HEIGHT + y + 1) % 500 == 0 {
+				let completion = (x * HEIGHT + y + 1) as f64 / (WIDTH * HEIGHT) as f64;
+
+				let estimated_remaining = start.elapsed().div_f64(completion).mul_f64(1.0 - completion);
+				dbg!(estimated_remaining);
+			}
 		}
 	}
 
 	println!("{:?}", start.elapsed());
-	println!("{}ms elapsed", start.elapsed().as_millis());
 
 	image.save("out.png").unwrap();
 }
 
-struct Ray {
-	position: Coords4,
-	velocity: Coords4,
+struct Camera {
+	camera_position: XYZCoords,
+
+	// I should add a check that these are orthogonal
+
+	camera_facing: XYZUnitCoords,
+	camera_right: XYZUnitCoords,
+	camera_up: XYZUnitCoords,
 }
 
 #[derive(Copy, Clone, Debug)]
-enum Termination {
-	EventHorizon(Coords2),
-	Background(Coords2),
+struct Ray {
+	position: SpacetimeCoords,
+	velocity: SpacetimeCoords,
+	plane_x: XYZUnitCoords,
+	plane_y: XYZUnitCoords,
 }
 
 impl Ray {
-	fn new(position: Coords4, direction: Coords3) -> Self {
-		let normed = direction.local_norm();
-		let local_metric = metric(position);
-		let velocity = Coords4 {
-			t: -(-local_metric[[0, 0]]).sqrt().recip(),
-			r: local_metric[[1, 1]].sqrt().recip() * normed.r,
-			theta: local_metric[[2, 2]].sqrt().recip() * normed.theta,
-			phi: local_metric[[3, 3]].sqrt().recip() * normed.phi,
+	fn new(camera: &Camera, x_scale: f64, y_scale: f64) -> Self {
+		let Camera {
+			camera_position,
+			camera_facing,
+			camera_right,
+			camera_up,
+		} = camera;
+
+		let (unit_position, len) = camera_position.to_unit_and_len().unwrap();
+
+		let position = SpacetimeCoords::new(
+			0.0,
+			len,
+			0.0,
+		);
+
+		let cartesian_velocity = XYZCoords {
+			x: camera_facing.x() + x_scale * camera_right.x() + y_scale * camera_up.x(),
+			y: camera_facing.y() + x_scale * camera_right.y() + y_scale * camera_up.y(),
+			z: camera_facing.z() + x_scale * camera_right.z() + y_scale * camera_up.z(),
 		};
 
-		Ray {
-			position,
-			velocity,
+		let radial_velocity = XYZCoords::from(unit_position).dot(&cartesian_velocity);
+		let tangent_velocity = XYZCoords {
+			x: cartesian_velocity.x - radial_velocity * unit_position.x(),
+			y: cartesian_velocity.y - radial_velocity * unit_position.y(),
+			z: cartesian_velocity.z - radial_velocity * unit_position.z(),
+		};
+
+		// plane_x and plane_y are supposed to be basis vectors for the plane the light ray lies in
+		let plane_x = unit_position;
+		let plane_y;
+		let theta_velocity;
+
+		if let Some((unit, len)) = tangent_velocity.to_unit_and_len() {
+			plane_y = unit;
+			theta_velocity = len;
+		} else {
+			plane_y = plane_x; // I guess this is an ok default
+			theta_velocity = 0.0;
 		}
+
+		let local_metric_inverse = metric_inverted(&position);
+
+		let inv_local_len = (radial_velocity.powi(2) + theta_velocity.powi(2)).sqrt().recip();
+
+		let velocity = SpacetimeCoords::new(
+			-(-local_metric_inverse[[0, 0]]).sqrt(),
+			local_metric_inverse[[1, 1]].sqrt() * inv_local_len * radial_velocity,
+			local_metric_inverse[[2, 2]].sqrt() * inv_local_len * theta_velocity,
+		);
+
+		Ray {position, velocity, plane_x, plane_y}
 	}
 
 	fn step(&mut self, delta_t: f64) {
-		let mut acceleration = [0.0; 4];
+		let Ray {position, velocity, ..} = self;
+		let mut acceleration = SpacetimeCoords::new(0.0, 0.0, 0.0);
 
-		let mut p = self.position.as_array();
-		let mut v = self.velocity.as_array();
-		
-		let local_christoffel = christoffel(self.position);
+		let local_christoffel = christoffel(position);
 
-		for mu in 0 .. 4 {
+		for mu in 0 .. NUM_DIMS {
 			let mut sum = 0.0;
 
-			for alpha in 0 .. 4 {
-				for beta in 0 .. 4 {
-					sum += local_christoffel[[mu, alpha, beta]] * v[alpha] * v[beta];
+			for alpha in 0 .. NUM_DIMS {
+				for beta in 0 .. NUM_DIMS {
+					sum += local_christoffel[[mu, alpha, beta]] * velocity[alpha] * velocity[beta];
 				}
 			}
 
 			acceleration[mu] = -sum;
 		}
 
-		for i in 0 .. 4 {
-			p[i] += v[i] * delta_t + 0.5 * acceleration[i] * delta_t * delta_t;
+		for i in 0 .. NUM_DIMS {
+			position[i] += velocity[i] * delta_t + 0.5 * acceleration[i] * delta_t * delta_t;
 		}
 
-		for i in 0 .. 4 {
-			v[i] += acceleration[i] * delta_t;
+		for i in 0 .. NUM_DIMS {
+			velocity[i] += acceleration[i] * delta_t;
 		}
-
-		self.position = p.into();
-		self.velocity = v.into();
 	}
 
 	fn terminate(&self) -> Option<Termination> {
-		if self.position.r <= RS * 1.05 {
-			return Some(Termination::EventHorizon(self.position.to_coords2()));
+		let Ray {plane_x, plane_y, position, ..} = self;
+
+		let unit_coords = || {
+			let x_component = position.phi().cos();
+			let y_component = position.phi().sin();
+
+			unsafe {
+				XYZUnitCoords::new_unchecked(
+					x_component * plane_x.x() + y_component * plane_y.x(),
+					x_component * plane_x.y() + y_component * plane_y.y(),
+					x_component * plane_x.z() + y_component * plane_y.z(),
+				)
+			}
+		};
+
+		if *position.r() <= RS * 1.05 {
+			return Some(Termination::EventHorizon(unit_coords().into()));
 		}
 
-		if self.position.r >= 20.0 {
-			return Some(Termination::Background(self.position.to_coords2()));
+		if *position.r() >= 20.0 {
+			return Some(Termination::Background(unit_coords().into()));
 		}
-		
+
 		None
 	}
 
-	fn spacetime_interval(&self) -> f64 {
-		let g = metric(self.position);
-		let v = self.velocity.as_array();
+	fn renormalize(&mut self) {
+		let local_metric = metric(&self.position);
 
+		let velocity = &mut self.velocity;
+
+		let mut space_components = 0.0;
+
+		space_components += local_metric[[1, 1]] * velocity.r() * velocity.r();
+		space_components += local_metric[[2, 2]] * velocity.phi() * velocity.phi();
+
+		let required_time_component = -space_components;
+		let time_len_squared = required_time_component / local_metric[[0, 0]];
+
+		*velocity.t_mut() = -time_len_squared.sqrt();
+
+		let mut cartesian_len = 0.0;
+
+		for i in 0 .. NUM_DIMS {
+			cartesian_len += velocity[i].powi(2);
+		}
+
+		let scaling = cartesian_len.sqrt().recip();
+
+		for i in 0 .. NUM_DIMS {
+			velocity[i] *= scaling;
+		}
+	}
+
+	fn interval(ray: &Ray) -> f64 {
+		let local_metric = metric(&ray.position);
+	
 		let mut sum = 0.0;
-
-		for i in 0 .. 4 {
-			for j in 0 .. 4 {
-				sum += g[[i, j]] * v[i] * v[j];
-			}
+	
+		for i in 0 .. NUM_DIMS {
+			sum += local_metric[[i, i]] * ray.velocity[i].powi(2);
 		}
-
-		sum
+	
+		return sum;
 	}
 }
 
 #[derive(Copy, Clone, Debug)]
-struct Coords4 {
-	t: f64,
-	r: f64,
-	theta: f64,
-	phi: f64,
-}
-
-impl Coords4 {
-	fn as_array(self) -> [f64; 4] {
-		[self.t, self.r, self.theta, self.phi]
-	}
-
-	fn to_coords2(&self) -> Coords2 {
-		Coords2 {
-			theta: self.theta,
-			phi: self.phi,
-		}
-	}
-}
-
-#[derive(Copy, Clone, Debug)]
-struct Coords3 {
-	r: f64,
-	theta: f64,
-	phi: f64,
-}
-
-#[derive(Copy, Clone, Debug)]
-struct Coords2 {
-	theta: f64,
-	phi: f64,
-}
-
-impl Coords3 {
-	fn local_len(&self) -> f64 {
-		(self.r.powi(2) + self.theta.powi(2) + self.phi.powi(2)).sqrt()
-	}
-
-	fn local_norm(&self) -> Coords3 {
-		let len = self.local_len();
-
-		Coords3 {
-			r: self.r / len,
-			theta: self.theta / len,
-			phi: self.phi / len,
-		}
-	}
-}
-
-impl From<[f64; 4]> for Coords4 {
-	fn from(array: [f64; 4]) -> Coords4 {
-		Coords4 {t: array[0], r: array[1], theta: array[2], phi: array[3]}
-	}
-}
-
-impl From<Coords4> for [f64; 4] {
-	fn from(coords: Coords4) -> [f64; 4] {
-		coords.as_array()
-	}
+enum Termination {
+	EventHorizon(SphericalCoords),
+	Background(SphericalCoords),
 }
 
 const C: f64 = 1.0;
 const RS: f64 = 0.1;
 
-// Schwartzschild metric
-fn metric(point: Coords4) -> Tensor<Index2> {
+// Schwarzschild metric
+// currently only diagonal metrics are supported
+fn metric(point: &SpacetimeCoords) -> Tensor<Index2> {
 	let mut out = Tensor::new();
 
-	out[[0, 0]] = -(1.0 - RS / point.r) * C.powi(2);
-	out[[1, 1]] = 1.0 / (1.0 - RS / point.r);
-	out[[2, 2]] = point.r.powi(2);
-	out[[3, 3]] = (point.r * point.theta.sin()).powi(2);
+	out[[0, 0]] = -(1.0 - RS / point.r()) * C.powi(2);
+	out[[1, 1]] = 1.0 / (1.0 - RS / point.r());
+	out[[2, 2]] = point.r() * point.r();
 
 	out
 }
 
-fn metric_inverted(point: Coords4) -> Tensor<Index2> {
+fn metric_inverted(point: &SpacetimeCoords) -> Tensor<Index2> {
 	let mut out = Tensor::new();
 
-	out[[0, 0]] = -1.0 / ((1.0 - RS / point.r) * C.powi(2));
-	out[[1, 1]] = 1.0 - RS / point.r;
-	out[[2, 2]] = 1.0 / point.r.powi(2);
-	out[[3, 3]] = 1.0 / (point.r * point.theta.sin()).powi(2);
+	out[[0, 0]] = -1.0 / ((1.0 - RS / point.r()) * C.powi(2));
+	out[[1, 1]] = 1.0 - RS / point.r();
+	out[[2, 2]] = point.r().powi(-2);
 
 	out
 }
 
-fn metric_partials(point: Coords4) -> Tensor<Index3> {
+fn metric_partials(point: &SpacetimeCoords) -> Tensor<Index3> {
 	let mut out = Tensor::new();
 
-	out[[0, 0, 1]] = -C.powi(2) * RS / point.r.powi(2);
-	out[[1, 1, 1]] = -RS / (RS - point.r).powi(2);
-	out[[2, 2, 1]] = 2.0 * point.r;
-	out[[3, 3, 1]] = 2.0 * point.r * point.theta.sin().powi(2);
-
-	out[[3, 3, 2]] = 2.0 * point.r.powi(2) * point.theta.sin() * point.theta.cos();
+	out[[0, 0, 1]] = -C.powi(2) * RS / point.r().powi(2);
+	out[[1, 1, 1]] = -RS / (RS - point.r()).powi(2);
+	out[[2, 2, 1]] = 2.0 * point.r();
 
 	out
 }
 
-/*
-// Spherical metric
-fn metric(point: Coords4) -> Tensor<Index2> {
-	let mut out = Tensor::new(4);
-
-	out[[0, 0]] = -1.0;
-	out[[1, 1]] = 1.0;
-	out[[2, 2]] = point.r.powi(2);
-	out[[3, 3]] = (point.r * point.theta.sin()).powi(2);
-
-	out
-}
-
-fn metric_inverted(point: Coords4) -> Tensor<Index2> {
-	let mut out = Tensor::new(4);
-
-	out[[0, 0]] = -1.0;
-	out[[1, 1]] = 1.0;
-	out[[2, 2]] = 1.0 / point.r.powi(2);
-	out[[3, 3]] = 1.0 / (point.r * point.theta.sin()).powi(2);
-
-	out
-}
-
-fn metric_partials(point: Coords4) -> Tensor<Index3> {
-	let mut out = Tensor::new(4);
-
-	out[[2, 2, 1]] = 2.0 * point.r;
-	out[[3, 3, 1]] = 2.0 * point.r * point.theta.sin().powi(2);
-
-	out[[3, 3, 2]] = 2.0 * point.r.powi(2) * point.theta.sin() * point.theta.cos();
-
-	out
-}
-*/
-
-fn christoffel(point: Coords4) -> Tensor<Index3> {
+fn christoffel(point: &SpacetimeCoords) -> Tensor<Index3> {
 	let g_inv = metric_inverted(point);
 	let g_partials = metric_partials(point);
 	let mut gamma = Tensor::new();
 
-	for i in 0 .. 4 {
+	for i in 0 .. NUM_DIMS {
 		let ginvii = 0.5 * g_inv[[i, i]];
 
-		for m in 0 .. 4 {
+		for m in 0 .. NUM_DIMS {
 			let adding = ginvii * g_partials[[i, i, m]];
 
 			gamma[[i, i, m]] += adding;
@@ -376,45 +323,23 @@ fn christoffel(point: Coords4) -> Tensor<Index3> {
 	gamma
 }
 
-// these functions are both massive hacks:
+fn determine_pixel(coords: SphericalCoords, background: &ImageBuffer::<Rgba<u8>, Vec<u8>>) -> Rgb<u8> {
+	let background_width = background.width() as f64;
+	let background_height = background.height() as f64;
 
-fn flip_position(theta: f64, phi: f64) -> (f64, f64) {
-	let x = theta.sin() * phi.cos();
-	let y = theta.cos();
-	let z = theta.sin() * phi.sin();
+	let SphericalCoords {mut theta, mut phi} = coords;
 
-	let (x, y) = (y, x);
-
-	let phi = z.atan2(x);
-	let theta = (x * x + z * z).sqrt().atan2(y);
-
-	(theta, phi)
-}
-
-fn flip_velocity(dtheta: f64, dphi: f64, old_position: (f64, f64), new_position: (f64, f64)) -> (f64, f64) {
-	let (otheta, ophi) = old_position;
-	let (ntheta, nphi) = new_position;
-
-	let dx = otheta.cos() * ophi.cos() * dtheta - otheta.sin() * ophi.sin() * dphi;
-	let dy = -otheta.sin() * dtheta;
-	let dz = otheta.cos() * ophi.sin() * dtheta + otheta.sin() * ophi.cos() * dphi;
-
-	let (dx, dy) = (dy, dx);
-
-	let dtheta = -dy / ntheta.sin();
-
-	let neg_sin_theta_sin_phi_dphi = dx - ntheta.cos() * nphi.cos() * dtheta;
-	let sin_theta_cos_phi_dphi = dz - ntheta.cos() * nphi.sin() * dtheta;
-
-	let sin_theta_dphi_squared = neg_sin_theta_sin_phi_dphi.powi(2) + sin_theta_cos_phi_dphi.powi(2);
-
-	let dphi_squared = sin_theta_dphi_squared / ntheta.sin().powi(2);
-
-	let mut dphi = dphi_squared.sqrt();
-
-	if (ntheta.sin() * nphi.cos() * dphi).signum() != sin_theta_cos_phi_dphi.signum() {
-		dphi *= -1.0;
+	theta = theta.rem_euclid(TAU);
+	if theta >= PI {
+		phi += PI;
+		theta -= PI;
 	}
+	phi = phi.rem_euclid(TAU);
 
-	(dtheta, dphi)
+	let x = phi / TAU * background_width;
+	let y = theta / PI * background_height;
+
+	let pixel = background.get_pixel(x.floor() as u32, y.floor() as u32);
+
+	[pixel[0], pixel[1], pixel[2]].into()
 }

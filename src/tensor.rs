@@ -1,6 +1,6 @@
 use std::ops::{Index, IndexMut};
 
-pub const NUM_DIMS: usize = 4;
+pub const NUM_DIMS: usize = 3;
 
 pub struct Tensor<T: TensorIndex> {
 	backing_storage: T::BackingStorage,
